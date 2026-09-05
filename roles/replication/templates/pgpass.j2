@@ -1,0 +1,7 @@
+{{ hostvars[groups['primary'][0]].postgresql_node_ip | default(hostvars[groups['primary'][0]].ansible_host) | default(groups['primary'][0]) }}:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}
+{{ cluster_vip }}:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}
+{% for host in groups['postgres_cluster'] %}
+{{ hostvars[host].postgresql_node_ip | default(hostvars[host].ansible_host) | default(host) }}:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}
+{% endfor %}
+localhost:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}
+127.0.0.1:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}

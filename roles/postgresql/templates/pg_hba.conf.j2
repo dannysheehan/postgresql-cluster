@@ -1,0 +1,22 @@
+# Managed by Ansible
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+local   all             postgres                                peer
+local   all             all                                     peer
+{# Localhost trust rules must precede scram — DocumentDB/pg_cron reconnect without a password #}
+{% for rule in postgresql_local_trust_hba_entries | default([]) %}
+{% if rule.address | default('') in ['local', ''] %}
+local   {{ rule.database }}    {{ rule.user }}                         {{ rule.method | default('trust') }}
+{% else %}
+host    {{ rule.database }}    {{ rule.user }}    {{ rule.address }}    {{ rule.method | default('trust') }}
+{% endif %}
+{% endfor %}
+host    all             all             127.0.0.1/32            {{ postgresql_authentication_method }}
+host    all             all             ::1/128                 {{ postgresql_authentication_method }}
+{% for cidr in postgresql_allowed_cidrs %}
+host    all             all             {{ cidr }}              {{ postgresql_authentication_method }}
+host    replication     {{ postgresql_replication_user }} {{ cidr }} {{ postgresql_authentication_method }}
+{% endfor %}
+{% for rule in postgresql_app_hba_entries | default([]) %}
+host    {{ rule.database }}    {{ rule.user }}    {{ rule.address }}    {{ rule.method | default(postgresql_authentication_method) }}
+{% endfor %}
+host    replication     {{ postgresql_replication_user }} 127.0.0.1/32 {{ postgresql_authentication_method }}

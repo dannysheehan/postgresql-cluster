@@ -1,0 +1,102 @@
+---
+- name: Verify cluster health
+  hosts: primary
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Primary must not be in recovery
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT pg_is_in_recovery() AS in_recovery
+      become_user: postgres
+      register: primary_recovery
+
+    - name: Assert primary is writable
+      ansible.builtin.assert:
+        that:
+          - not (primary_recovery.query_result[0].in_recovery | bool)
+
+    - name: Check streaming replicas
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT COUNT(*) AS replicas FROM pg_stat_replication
+      become_user: postgres
+      register: replicas
+
+    - name: Assert at least one replica
+      ansible.builtin.assert:
+        that:
+          - replicas.query_result[0].replicas | int >= 1
+        fail_msg: No streaming replica connected to primary
+
+    - name: Write a canary row via VIP
+      community.postgresql.postgresql_query:
+        login_host: "{{ cluster_vip }}"
+        login_user: postgres
+        login_password: "{{ vault_postgresql_superuser_password }}"
+        port: "{{ postgresql_port }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS molecule_canary (id int PRIMARY KEY, note text);
+          INSERT INTO molecule_canary (id, note) VALUES (1, 'ok')
+          ON CONFLICT (id) DO UPDATE SET note = EXCLUDED.note;
+      register: vip_write
+      until: vip_write is succeeded
+      retries: 30
+      delay: 2
+      no_log: true
+
+    - name: Check VIP is present on primary
+      ansible.builtin.command:
+        cmd: "ip -4 addr show {{ keepalived_interface }}"
+      register: vip_addr
+      changed_when: false
+      failed_when: cluster_vip not in vip_addr.stdout
+
+    - name: pgBackRest info
+      ansible.builtin.command:
+        cmd: pgbackrest --stanza={{ pgbackrest_stanza }} info --output=json
+      become_user: postgres
+      register: backup_info
+      changed_when: false
+
+    - name: Assert backup stanza exists
+      ansible.builtin.assert:
+        that:
+          - backup_info.rc == 0
+          - backup_info.stdout | length > 2
+
+- name: Verify standby
+  hosts: standby
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Standby must be in recovery
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT pg_is_in_recovery() AS in_recovery
+      become_user: postgres
+      register: standby_recovery
+
+    - name: Assert standby is read-only replica
+      ansible.builtin.assert:
+        that:
+          - standby_recovery.query_result[0].in_recovery | bool
+
+    - name: Read canary from standby
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT note FROM molecule_canary WHERE id = 1
+      become_user: postgres
+      register: canary
+      until: canary.query_result | length > 0
+      retries: 30
+      delay: 2
+
+    - name: Assert canary replicated
+      ansible.builtin.assert:
+        that:
+          - canary.query_result[0].note == 'ok'

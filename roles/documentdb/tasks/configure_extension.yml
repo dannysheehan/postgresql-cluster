@@ -1,0 +1,153 @@
+---
+# Run only on primary after rolling restart (shared_preload loaded on all nodes).
+
+- name: Ensure DocumentDB extension exists
+  community.postgresql.postgresql_query:
+    login_host: "{{ cluster_vip }}"
+    login_port: "{{ postgresql_port }}"
+    login_user: postgres
+    login_password: "{{ vault_postgresql_superuser_password }}"
+    db: "{{ item }}"
+    query: "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"
+  loop: "{{ documentdb_extension_databases }}"
+  no_log: true
+
+- name: Grant DocumentDB app user CONNECT on extension databases
+  when: documentdb_app_user | length > 0
+  community.postgresql.postgresql_privs:
+    login_host: "{{ cluster_vip }}"
+    login_port: "{{ postgresql_port }}"
+    login_user: postgres
+    login_password: "{{ vault_postgresql_superuser_password }}"
+    db: "{{ item }}"
+    privs: CONNECT,CREATE,TEMPORARY
+    type: database
+    role: "{{ documentdb_app_user }}"
+    state: present
+  loop: "{{ documentdb_extension_databases }}"
+  no_log: true
+
+# DocumentDB API functions are not SECURITY DEFINER — callers need table rights.
+# Static GRANTs go stale as collections create tables at runtime; use the
+# extension's documentdb_admin_role instead.
+- name: Grant DocumentDB admin role and required privileges to app user
+  when: documentdb_app_user | length > 0
+  community.postgresql.postgresql_query:
+    login_host: "{{ cluster_vip }}"
+    login_port: "{{ postgresql_port }}"
+    login_user: postgres
+    login_password: "{{ vault_postgresql_superuser_password }}"
+    db: "{{ item.0 }}"
+    query: "{{ item.1 }}"
+  loop: "{{ documentdb_extension_databases | product(documentdb_app_grants) | list }}"
+  vars:
+    documentdb_app_grants:
+      # FerretDB startup SET (issue #4997) — not covered by documentdb_admin_role
+      - "GRANT SET ON PARAMETER documentdb.maxUserLimit TO {{ documentdb_app_user }}"
+      - "GRANT {{ documentdb_admin_role }} TO {{ documentdb_app_user }}"
+      - "GRANT USAGE ON SCHEMA documentdb_data TO {{ documentdb_app_user }}"
+  no_log: true
+
+- name: Resolve DocumentDB app user password for verification
+  when:
+    - documentdb_app_user | length > 0
+    - documentdb_app_password is not defined or documentdb_app_password | length == 0
+    - documentdb_app_password_op_item | default('') | length > 0
+  ansible.builtin.set_fact:
+    documentdb_app_password: >-
+      {{ lookup(
+           'community.general.onepassword',
+           documentdb_app_password_op_item,
+           field=documentdb_app_password_op_field,
+           vault=documentdb_app_password_op_vault
+         ) }}
+  no_log: true
+
+- name: Verify DocumentDB works as app user
+  when:
+    - documentdb_app_user | length > 0
+    - documentdb_app_password is defined
+    - documentdb_app_password | length > 0
+  block:
+    - name: App user SET documentdb.maxUserLimit
+      community.postgresql.postgresql_query:
+        login_host: "{{ cluster_vip }}"
+        login_port: "{{ postgresql_port }}"
+        login_user: "{{ documentdb_app_user }}"
+        login_password: "{{ documentdb_app_password }}"
+        db: postgres
+        query: "SET documentdb.maxUserLimit TO 100"
+      no_log: true
+      changed_when: false
+
+    - name: App user can write via documentdb_api.insert_one
+      community.postgresql.postgresql_query:
+        login_host: "{{ cluster_vip }}"
+        login_port: "{{ postgresql_port }}"
+        login_user: "{{ documentdb_app_user }}"
+        login_password: "{{ documentdb_app_password }}"
+        db: postgres
+        query: >-
+          SELECT documentdb_api.insert_one(
+            '{{ documentdb_probe_database }}',
+            '{{ documentdb_probe_collection }}',
+            '{"_id":"t1","ok":true}'
+          )
+      no_log: true
+
+    - name: App user can drop probe collection
+      community.postgresql.postgresql_query:
+        login_host: "{{ cluster_vip }}"
+        login_port: "{{ postgresql_port }}"
+        login_user: "{{ documentdb_app_user }}"
+        login_password: "{{ documentdb_app_password }}"
+        db: postgres
+        query: >-
+          SELECT documentdb_api.drop_collection(
+            '{{ documentdb_probe_database }}',
+            '{{ documentdb_probe_collection }}'
+          )
+      no_log: true
+
+    - name: Assert app user holds documentdb_admin_role
+      community.postgresql.postgresql_query:
+        login_host: "{{ cluster_vip }}"
+        login_port: "{{ postgresql_port }}"
+        login_user: postgres
+        login_password: "{{ vault_postgresql_superuser_password }}"
+        db: postgres
+        query: >-
+          SELECT pg_has_role('{{ documentdb_app_user }}',
+                             '{{ documentdb_admin_role }}',
+                             'member') AS is_member
+      register: documentdb_role_membership
+      no_log: true
+      changed_when: false
+
+    - name: Assert documentdb_admin_role membership
+      ansible.builtin.assert:
+        that:
+          - documentdb_role_membership.query_result[0].is_member | bool
+        fail_msg: >-
+          {{ documentdb_app_user }} is not a member of {{ documentdb_admin_role }}
+
+- name: Verify DocumentDB libraries are loaded
+  community.postgresql.postgresql_query:
+    login_host: "{{ cluster_vip }}"
+    login_port: "{{ postgresql_port }}"
+    login_user: postgres
+    login_password: "{{ vault_postgresql_superuser_password }}"
+    db: postgres
+    query: "SHOW shared_preload_libraries;"
+  register: documentdb_preload
+  no_log: true
+  changed_when: false
+
+- name: Assert DocumentDB preload libraries present
+  ansible.builtin.assert:
+    that:
+      - "'pg_documentdb' in (documentdb_preload.query_result[0].shared_preload_libraries | default(''))"
+      - "'pg_cron' in (documentdb_preload.query_result[0].shared_preload_libraries | default(''))"
+    fail_msg: >-
+      shared_preload_libraries missing DocumentDB entries after restart.
+      Got: {{ documentdb_preload.query_result | default([]) }}

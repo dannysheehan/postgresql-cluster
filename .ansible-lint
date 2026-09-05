@@ -1,0 +1,24 @@
+---
+# Rules are enforced by default. Entries below are *known outstanding debt*:
+# they report as warnings so CI stays meaningful without being red on day one.
+# Fixing one means deleting its line here — not adding to the list.
+
+exclude_paths:
+  - .venv/
+  - collections/
+  - .ansible/
+  - .github/
+
+warn_list:
+  # False positive: raises an internal login_port warning for
+  # community.postgresql modules.
+  - args
+  # ansible.cfg sets become=True globally, which is what makes bare
+  # `become_user:` work. Fragile — tasks should carry explicit `become:`.
+  - partial-become
+  # Registered vars inside roles predate the role-prefix convention.
+  - var-naming[no-role-prefix]
+  # Diagnostic commands that should declare changed_when.
+  - no-changed-when
+  - name[casing]
+  - yaml[line-length]

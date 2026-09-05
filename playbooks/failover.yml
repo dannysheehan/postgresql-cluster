@@ -1,0 +1,126 @@
+---
+# Unplanned failover: fence the old primary, THEN promote the standby.
+#
+# Ordering matters. Promoting first leaves both nodes writable while the VIP is
+# still on the (healthy, priority 100) old primary, so writes accepted through
+# the VIP in that window are lost when reinit_standby.yml wipes that node.
+#
+# Two cases must stay distinct:
+#   * old primary unreachable  -> it is already fenced; promote.
+#   * old primary reachable but we could not stop it -> abort without promoting,
+#     otherwise we hand out two writable primaries.
+# ignore_unreachable covers the first; the fence-result check covers the second.
+# (any_errors_fatal cannot be used here: when the only [primary] host is
+# unreachable it ends the whole playbook and the promote never runs.)
+
+- name: Fence former primary before promoting
+  hosts: primary
+  become: true
+  ignore_unreachable: true
+  tasks:
+    - name: Fence former primary
+      block:
+        - name: Stop keepalived on former primary so it releases the VIP
+          ansible.builtin.service:
+            name: keepalived
+            state: stopped
+
+        - name: Stop PostgreSQL on former primary
+          ansible.builtin.service:
+            name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+            state: stopped
+
+        - name: Confirm former primary no longer accepts connections
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: "{{ postgresql_port }}"
+            state: stopped
+            timeout: 60
+
+        - name: Record successful fence
+          ansible.builtin.set_fact:
+            pg_fence_ok: true
+      rescue:
+        - name: Record failed fence
+          ansible.builtin.set_fact:
+            pg_fence_ok: false
+
+# An unreachable host never set pg_fence_ok, so it defaults to fenced.
+- name: Abort if a reachable former primary could not be fenced
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Verify every reachable former primary was fenced
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].pg_fence_ok | default(true) | bool
+        fail_msg: >-
+          Could not stop PostgreSQL/keepalived on {{ item }}, and it is still
+          reachable. Promoting now would leave two writable primaries.
+          Stop PostgreSQL and keepalived on {{ item }} by hand, confirm the VIP
+          has moved off it, then re-run this playbook.
+        quiet: true
+      loop: "{{ groups['primary'] }}"
+
+- name: Promote standby to primary
+  hosts: standby
+  become: true
+  serial: 1
+  tasks:
+    - name: Check recovery state
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT pg_is_in_recovery() AS in_recovery
+      become: true
+      become_user: postgres
+      register: recovery_state
+      changed_when: false
+
+    - name: Promote standby
+      ansible.builtin.command:
+        cmd: "pg_ctlcluster {{ postgresql_version }} {{ postgresql_cluster_name }} promote"
+      when: recovery_state.query_result[0].in_recovery | bool
+      changed_when: true
+
+    - name: Wait until node is writable
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT pg_is_in_recovery() AS in_recovery
+      become: true
+      become_user: postgres
+      register: promoted
+      until: not (promoted.query_result[0].in_recovery | bool)
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    - name: Create replication slot for former primary rebuild
+      community.postgresql.postgresql_slot:
+        name: "{{ postgresql_replication_slot }}"
+        slot_type: physical
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ postgresql_port }}"
+      become: true
+      become_user: postgres
+      failed_when: false
+
+    - name: Restart keepalived so VIP can land here
+      ansible.builtin.service:
+        name: keepalived
+        state: restarted
+
+- name: Reminder to rebuild former primary as standby
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Print next steps
+      ansible.builtin.debug:
+        msg: >-
+          Standby has been promoted. Update inventory so the new primary is in
+          [primary] and the old primary is in [standby], then run
+          playbooks/reinit_standby.yml against the old node (or wipe and
+          re-run the standby bootstrap).

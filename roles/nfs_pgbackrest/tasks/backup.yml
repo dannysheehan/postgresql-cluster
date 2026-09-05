@@ -1,0 +1,25 @@
+---
+- name: Create pgBackRest stanza on primary
+  ansible.builtin.command:
+    cmd: pgbackrest --stanza={{ pgbackrest_stanza }} stanza-create
+  become: true
+  become_user: postgres
+  register: stanza_create
+  changed_when: "'already exists' not in ((stanza_create.stderr | default('')) + (stanza_create.stdout | default('')))"
+  failed_when:
+    - stanza_create.rc != 0
+    - "'already exists' not in ((stanza_create.stderr | default('')) + (stanza_create.stdout | default('')))"
+
+- name: Reload PostgreSQL so archive_command is active
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    state: reloaded
+
+- name: Take initial full backup on primary
+  ansible.builtin.command:
+    cmd: pgbackrest --stanza={{ pgbackrest_stanza }} --type=full backup
+  become: true
+  become_user: postgres
+  when: pgbackrest_run_initial_backup | default(true) | bool
+  async: 7200
+  poll: 15

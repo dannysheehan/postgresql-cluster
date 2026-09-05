@@ -1,0 +1,58 @@
+---
+- name: Wait for PostgreSQL to accept local connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ postgresql_port }}"
+    timeout: 60
+
+- name: Assert vault passwords are defined
+  ansible.builtin.assert:
+    that:
+      - vault_postgresql_superuser_password is defined
+      - vault_postgresql_superuser_password | length > 0
+      - vault_postgresql_replication_password is defined
+    fail_msg: "Missing vault passwords — ensure group_vars/vault.yml is loaded"
+
+- name: Set postgres superuser password
+  ansible.builtin.command:
+    argv:
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -c
+      - "ALTER USER postgres WITH PASSWORD '{{ vault_postgresql_superuser_password }}'"
+  become: true
+  become_user: postgres
+  register: alter_postgres_pw
+  changed_when: alter_postgres_pw.rc == 0
+  no_log: true
+
+- name: Create replication user
+  community.postgresql.postgresql_user:
+    name: "{{ postgresql_replication_user }}"
+    password: "{{ vault_postgresql_replication_password }}"
+    role_attr_flags: LOGIN,REPLICATION
+    db: postgres
+    login_unix_socket: /var/run/postgresql
+    port: "{{ postgresql_port }}"
+  become: true
+  become_user: postgres
+  no_log: true
+
+- name: Create physical replication slot for standby
+  community.postgresql.postgresql_slot:
+    name: "{{ postgresql_replication_slot }}"
+    slot_type: physical
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ postgresql_port }}"
+  become: true
+  become_user: postgres
+
+- name: Ensure .pgpass for replication connectivity tests
+  ansible.builtin.template:
+    src: pgpass.j2
+    dest: /var/lib/postgresql/.pgpass
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true

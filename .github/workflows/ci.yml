@@ -1,0 +1,75 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: the workflow only ever reads the repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and syntax check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --python 3.12 --frozen
+
+      - name: Install Galaxy collections
+        run: uv run ansible-galaxy collection install -r requirements.yml -p collections
+
+      - name: yamllint
+        run: uv run yamllint playbooks roles molecule inventory group_vars vars
+
+      - name: ansible-lint
+        # Rule config and the known-warning list live in .ansible-lint
+        run: uv run ansible-lint playbooks roles molecule
+
+      - name: Syntax check every playbook
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/collections
+          # Lab credentials; the real vault is never present in CI.
+          ANSIBLE_INVENTORY_ANY_UNPARSED_IS_FAILED: "true"
+        run: |
+          rc=0
+          for playbook in playbooks/*.yml; do
+            echo "::group::$playbook"
+            uv run ansible-playbook -i inventory/hosts.yml --syntax-check "$playbook" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,70 @@
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../requirements.yml
+
+driver:
+  name: vagrant
+  provider:
+    name: libvirt
+
+platforms:
+  - name: pg-node-1
+    box: bento/ubuntu-24.04
+    memory: 2048
+    cpus: 2
+    interfaces:
+      - network_name: private_network
+        type: static
+        auto_config: true
+        ip: 192.168.56.11
+    provider_raw_config_args:
+      - 'cpu_mode = "host-passthrough"'
+    groups:
+      - primary
+      - postgres_cluster
+
+  - name: pg-node-2
+    box: bento/ubuntu-24.04
+    memory: 2048
+    cpus: 2
+    interfaces:
+      - network_name: private_network
+        type: static
+        auto_config: true
+        ip: 192.168.56.12
+    provider_raw_config_args:
+      - 'cpu_mode = "host-passthrough"'
+    groups:
+      - standby
+      - postgres_cluster
+
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/roles"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/collections"
+    ANSIBLE_LIBRARY: "${MOLECULE_PROJECT_DIRECTORY}/.venv/lib/python3.12/site-packages/molecule_vagrant/modules"
+  inventory:
+    links:
+      group_vars: ../lab_group_vars
+    host_vars: {}
+  playbooks:
+    converge: converge.yml
+    verify: verify.yml
+
+verifier:
+  name: ansible
+
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - verify
+    - destroy

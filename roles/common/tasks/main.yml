@@ -1,0 +1,56 @@
+---
+- name: Install common packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Apply light sysctl tuning for database hosts
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+    sysctl_set: true
+  loop:
+    - { key: vm.swappiness, value: "1" }
+    - { key: vm.overcommit_memory, value: "2" }
+    - { key: net.ipv4.ip_nonlocal_bind, value: "1" }
+
+- name: Ensure UFW is installed when enabled
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+  when: ufw_enabled | bool
+
+- name: Allow SSH through UFW
+  community.general.ufw:
+    rule: allow
+    name: OpenSSH
+  when: ufw_enabled | bool and ufw_allow_ssh | bool
+
+- name: Allow PostgreSQL from cluster CIDRs
+  community.general.ufw:
+    rule: allow
+    port: "{{ postgresql_port }}"
+    proto: tcp
+    from_ip: "{{ item }}"
+  loop: "{{ postgresql_allowed_cidrs }}"
+  when: ufw_enabled | bool
+
+- name: Allow VRRP (protocol 112) from cluster CIDRs
+  community.general.ufw:
+    rule: allow
+    proto: vrrp
+    from_ip: "{{ item }}"
+  loop: "{{ postgresql_allowed_cidrs }}"
+  when: ufw_enabled | bool
+  failed_when: false
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+  when: ufw_enabled | bool

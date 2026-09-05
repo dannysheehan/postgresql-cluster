@@ -1,0 +1,91 @@
+---
+# PostgreSQL
+postgresql_version: 16
+postgresql_cluster_name: main
+postgresql_data_dir: "/var/lib/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_name }}"
+postgresql_config_dir: "/etc/postgresql/{{ postgresql_version }}/{{ postgresql_cluster_name }}"
+postgresql_bin_dir: "/usr/lib/postgresql/{{ postgresql_version }}/bin"
+postgresql_port: 5432
+postgresql_listen_addresses: "*"
+postgresql_max_connections: 200
+postgresql_shared_buffers: "256MB"
+postgresql_effective_cache_size: "768MB"
+postgresql_work_mem: "8MB"
+postgresql_maintenance_work_mem: "128MB"
+postgresql_wal_level: replica
+postgresql_max_wal_senders: 10
+postgresql_max_replication_slots: 10
+postgresql_hot_standby: "on"
+postgresql_wal_keep_size: "1GB"
+postgresql_archive_mode: "on"
+postgresql_archive_timeout: 300
+postgresql_authentication_method: scram-sha-256
+
+# Replication / Keepalived peer address (defaults to ansible_host)
+# Molecule lab sets static private IPs via cluster_ips; ESXi uses ansible_host.
+cluster_ips: {}
+postgresql_node_ip: "{{ cluster_ips[inventory_hostname] | default(cluster_ip) | default(ansible_host) | default(inventory_hostname) }}"
+postgresql_replication_user: replicator
+postgresql_replication_slot: "standby_slot"
+
+# Lab / Molecule defaults. ESXi overrides: inventory/group_vars/postgres_cluster.yml
+cluster_vip: "192.168.56.10"
+cluster_vip_cidr: 24
+postgresql_allowed_cidrs:
+  - "192.168.56.0/24"
+  - "192.168.121.0/24"
+
+# Extra host rules (FerretDB app access, etc.)
+postgresql_app_hba_entries: []
+# Localhost trust for DocumentDB/pg_cron passwordless reconnects (empty in lab)
+postgresql_local_trust_hba_entries: []
+
+
+# Keepalived — interface is auto-detected from postgresql_node_ip unless set
+keepalived_interface: ""
+keepalived_router_id: 51
+# VRRP shared secret. Both nodes must match. Set vault_keepalived_auth_pass in
+# group_vars/all/vault.yml (encrypted) — never commit the real value.
+keepalived_auth_pass: "{{ vault_keepalived_auth_pass | default('changeme-vrrp') }}"
+keepalived_vrrp_unicast: true
+keepalived_check_interval: 2
+keepalived_check_fall: 2
+keepalived_check_rise: 2
+keepalived_priority_primary: 100
+keepalived_priority_standby: 90
+
+# pgBackRest
+pgbackrest_stanza: postgres-cluster
+pgbackrest_repo_path: /var/lib/pgbackrest
+pgbackrest_use_nfs: false
+pgbackrest_nfs_server: ""
+pgbackrest_nfs_export: ""
+pgbackrest_nfs_mount: /mnt/pgbackrest
+# Synology often supports NFSv3 + NFSv4.0 but not 4.1 — use fstype nfs + nfsvers
+pgbackrest_nfs_fstype: nfs
+pgbackrest_nfs_opts: "nfsvers=4.0,proto=tcp,hard,intr,rw,rsize=1048576,wsize=1048576,noatime,timeo=600,retrans=2,_netdev"
+pgbackrest_retention_full: 2
+pgbackrest_retention_diff: 7
+pgbackrest_process_max: 2
+pgbackrest_compress_type: lz4
+
+# PostgreSQL data disk (LVM + XFS on dedicated vdev, e.g. /dev/sdb)
+pg_data_disk: /dev/sdb
+pg_data_vg_name: pgdata
+pg_data_lv_name: pgdata
+pg_data_mount: /var/lib/postgresql
+pg_data_fs: xfs
+
+# Firewall (enable explicitly in inventory/hosts.yml for ESXi)
+ufw_enabled: false
+ufw_allow_ssh: true
+
+# OS packages extras
+common_packages:
+  - python3-psycopg2
+  - curl
+  - ca-certificates
+  - gnupg
+  - acl
+  - net-tools
+  - jq

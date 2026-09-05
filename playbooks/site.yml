@@ -1,0 +1,40 @@
+---
+- name: Baseline OS on all cluster nodes
+  hosts: postgres_cluster
+  become: true
+  roles:
+    - role: common
+
+- name: Install and configure PostgreSQL on all nodes
+  hosts: postgres_cluster
+  become: true
+  roles:
+    - role: postgresql
+    - role: nfs_pgbackrest
+
+- name: Bootstrap primary replication identity
+  hosts: primary
+  become: true
+  roles:
+    - role: replication
+
+- name: Create pgBackRest stanza and initial backup
+  hosts: primary
+  become: true
+  tasks:
+    - name: Run pgBackRest backup tasks
+      ansible.builtin.include_role:
+        name: nfs_pgbackrest
+        tasks_from: backup.yml
+
+- name: Bootstrap standby from primary
+  hosts: standby
+  become: true
+  roles:
+    - role: replication
+
+- name: Configure Keepalived VIP
+  hosts: postgres_cluster
+  become: true
+  roles:
+    - role: keepalived

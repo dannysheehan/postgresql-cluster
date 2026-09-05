@@ -1,0 +1,134 @@
+---
+# Prepare dedicated PostgreSQL data disk with LVM + XFS (run BEFORE playbooks/site.yml)
+#
+# Layout: sdb1 -> PV -> VG -> LV -> xfs -> /var/lib/postgresql
+#
+# Usage:
+#   uv run ansible-playbook -i inventory/hosts.yml playbooks/prepare_data_disk.yml
+
+- name: Prepare PostgreSQL data disk on cluster nodes
+  hosts: postgres_cluster
+  become: true
+  vars:
+    pg_data_disk: /dev/sdb
+    pg_data_partition: "{{ pg_data_disk }}1"
+    pg_data_vg_name: pgdata
+    pg_data_lv_name: pgdata
+    pg_data_lv_path: "/dev/{{ pg_data_vg_name }}/{{ pg_data_lv_name }}"
+    pg_data_mount: /var/lib/postgresql
+    pg_data_fs: xfs
+    pg_data_mount_opts: "noatime,nodiratime"
+    pg_data_fstab_passno: 0
+  tasks:
+    - name: Assert data disk exists
+      ansible.builtin.stat:
+        path: "{{ pg_data_disk }}"
+      register: data_disk
+      failed_when: not data_disk.stat.exists
+
+    - name: Install partitioning and LVM tools
+      ansible.builtin.apt:
+        name:
+          - parted
+          - gdisk
+          - lvm2
+          - xfsprogs
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Detect existing mount at PostgreSQL data path
+      ansible.builtin.command:
+        cmd: findmnt -n -o FSTYPE,SOURCE {{ pg_data_mount }}
+      register: existing_mount
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if PostgreSQL data path is mounted with unexpected layout
+      ansible.builtin.fail:
+        msg: >-
+          {{ pg_data_mount }} is already mounted as {{ existing_mount.stdout }}.
+          Expected LVM+XFS on {{ pg_data_lv_path }}.
+          If the disk is empty and PostgreSQL is not deployed, unmount and remove
+          /etc/fstab entry, then re-run this playbook. See docs/STORAGE-data-disk.md.
+      when:
+        - existing_mount.rc == 0
+        - pg_data_lv_path not in existing_mount.stdout
+        - pg_data_fs not in existing_mount.stdout
+
+    - name: Check partition table on data disk
+      ansible.builtin.command:
+        cmd: lsblk -no NAME {{ pg_data_disk }}
+      register: disk_parts
+      changed_when: false
+
+    - name: Create GPT label and LVM partition
+      community.general.parted:
+        device: "{{ pg_data_disk }}"
+        label: gpt
+        number: 1
+        state: present
+        part_start: 1MiB
+        part_end: 100%
+        flags: [lvm]
+        name: postgresql-data
+      when: disk_parts.stdout_lines | length <= 1
+
+    - name: Create volume group
+      community.general.lvg:
+        vg: "{{ pg_data_vg_name }}"
+        pvs: "{{ pg_data_partition }}"
+        state: present
+
+    - name: Create logical volume using full volume group
+      community.general.lvol:
+        vg: "{{ pg_data_vg_name }}"
+        lv: "{{ pg_data_lv_name }}"
+        size: 100%VG
+        state: present
+        shrink: false
+
+    - name: Create XFS filesystem on logical volume
+      community.general.filesystem:
+        fstype: "{{ pg_data_fs }}"
+        dev: "{{ pg_data_lv_path }}"
+        force: false
+
+    - name: Read logical volume UUID
+      ansible.builtin.command:
+        cmd: blkid -s UUID -o value {{ pg_data_lv_path }}
+      register: pg_data_uuid
+      changed_when: false
+
+    - name: Ensure mount point exists
+      ansible.builtin.file:
+        path: "{{ pg_data_mount }}"
+        state: directory
+        mode: "0755"
+
+    - name: Mount PostgreSQL data volume
+      ansible.posix.mount:
+        path: "{{ pg_data_mount }}"
+        src: "UUID={{ pg_data_uuid.stdout }}"
+        fstype: "{{ pg_data_fs }}"
+        opts: "{{ pg_data_mount_opts }}"
+        passno: "{{ pg_data_fstab_passno }}"
+        state: mounted
+
+    - name: Set ownership when postgres user already exists
+      ansible.builtin.file:
+        path: "{{ pg_data_mount }}"
+        owner: postgres
+        group: postgres
+        mode: "0750"
+      when: "'postgres' in ansible_facts.get('getent_passwd', {})"
+
+    - name: Show final layout
+      ansible.builtin.command:
+        cmd: lsblk -f {{ pg_data_disk }}
+      register: layout
+      changed_when: false
+
+    - name: Display layout
+      ansible.builtin.debug:
+        msg: "{{ layout.stdout_lines }}"

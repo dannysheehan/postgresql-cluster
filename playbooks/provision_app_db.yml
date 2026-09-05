@@ -1,0 +1,127 @@
+---
+# Provision an application database + role via the cluster VIP.
+# See docs/OPS-app-provisioning.md
+#
+# Usage:
+#   uv run ansible-playbook -i inventory/hosts.yml playbooks/provision_app_db.yml \
+#     -e @vars/apps/example.yml --ask-vault-pass
+#
+# Required vars (via -e or vars file):
+#   app_db_name, app_db_user
+#   app_db_password  OR  app_secrets_backend=onepassword + app_db_password_op_item
+#
+# Optional:
+#   app_db_extensions: []          # e.g. [uuid-ossp, pg_trgm]
+#   app_db_encoding / locale
+#   app_secrets_backend: vault|onepassword  (default: vault — password from app_db_password)
+
+- name: Provision application database and role
+  hosts: primary
+  gather_facts: false
+  run_once: true
+  vars:
+    app_secrets_backend: vault
+    # Match cluster initdb (Ubuntu PGDG default is C.UTF-8; en_US.UTF-8 is often absent)
+    app_db_encoding: UTF-8
+    app_db_lc_collate: C.UTF-8
+    app_db_lc_ctype: C.UTF-8
+    app_db_extensions: []
+    app_db_password_op_vault: Homelab
+    app_db_password_op_field: password
+    app_db_login_host: "{{ cluster_vip }}"
+    app_db_login_port: "{{ postgresql_port }}"
+    app_db_login_user: postgres
+    app_db_login_password: "{{ vault_postgresql_superuser_password }}"
+
+  pre_tasks:
+    - name: Require app identity vars
+      ansible.builtin.assert:
+        that:
+          - app_db_name is defined and app_db_name | length > 0
+          - app_db_user is defined and app_db_user | length > 0
+          - app_secrets_backend in ["vault", "onepassword"]
+        fail_msg: >-
+          Set app_db_name, app_db_user, and app_secrets_backend (vault|onepassword).
+          See vars/apps/example.yml and docs/OPS-app-provisioning.md
+
+    - name: Resolve app password from 1Password
+      when: app_secrets_backend == "onepassword"
+      ansible.builtin.set_fact:
+        app_db_password: >-
+          {{ lookup(
+               'community.general.onepassword',
+               app_db_password_op_item,
+               field=app_db_password_op_field,
+               vault=app_db_password_op_vault
+             ) }}
+      no_log: true
+
+    - name: Require app password
+      ansible.builtin.assert:
+        that:
+          - app_db_password is defined and app_db_password | length > 0
+          - app_db_login_password is defined and app_db_login_password | length > 0
+        fail_msg: >-
+          Set app_db_password (or 1Password item) and ensure
+          vault_postgresql_superuser_password is available.
+      no_log: true
+
+  tasks:
+    - name: Ensure application role exists
+      community.postgresql.postgresql_user:
+        login_host: "{{ app_db_login_host }}"
+        login_port: "{{ app_db_login_port }}"
+        login_user: "{{ app_db_login_user }}"
+        login_password: "{{ app_db_login_password }}"
+        name: "{{ app_db_user }}"
+        password: "{{ app_db_password }}"
+        role_attr_flags: NOSUPERUSER,NOCREATEDB,NOCREATEROLE
+        state: present
+      no_log: true
+
+    - name: Ensure application database exists
+      community.postgresql.postgresql_db:
+        login_host: "{{ app_db_login_host }}"
+        login_port: "{{ app_db_login_port }}"
+        login_user: "{{ app_db_login_user }}"
+        login_password: "{{ app_db_login_password }}"
+        name: "{{ app_db_name }}"
+        owner: "{{ app_db_user }}"
+        encoding: "{{ app_db_encoding }}"
+        lc_collate: "{{ app_db_lc_collate }}"
+        lc_ctype: "{{ app_db_lc_ctype }}"
+        template: template0
+        state: present
+      no_log: true
+
+    - name: Grant database privileges to application role
+      community.postgresql.postgresql_privs:
+        login_host: "{{ app_db_login_host }}"
+        login_port: "{{ app_db_login_port }}"
+        login_user: "{{ app_db_login_user }}"
+        login_password: "{{ app_db_login_password }}"
+        db: "{{ app_db_name }}"
+        privs: ALL
+        type: database
+        role: "{{ app_db_user }}"
+        state: present
+      no_log: true
+
+    - name: Ensure required extensions
+      community.postgresql.postgresql_ext:
+        login_host: "{{ app_db_login_host }}"
+        login_port: "{{ app_db_login_port }}"
+        login_user: "{{ app_db_login_user }}"
+        login_password: "{{ app_db_login_password }}"
+        db: "{{ app_db_name }}"
+        name: "{{ item }}"
+        state: present
+      loop: "{{ app_db_extensions }}"
+      no_log: true
+
+    - name: Summarize provisioned app database
+      ansible.builtin.debug:
+        msg: >-
+          Ready: db={{ app_db_name }} user={{ app_db_user }}
+          host={{ app_db_login_host }}:{{ app_db_login_port }}
+          extensions={{ app_db_extensions }}

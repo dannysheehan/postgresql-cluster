@@ -1,0 +1,11 @@
+---
+# Lab-only credentials for the Molecule scenarios.
+#
+# Molecule links its inventory group_vars at molecule/lab_group_vars so the
+# throwaway KVM cluster never needs the operator's encrypted
+# group_vars/all/vault.yml. These passwords are public by design and must
+# never be used on a real node.
+
+vault_postgresql_superuser_password: "MoleculeSuperuser!"
+vault_postgresql_replication_password: "MoleculeReplicator!"
+vault_keepalived_auth_pass: "MoleculeVRRP"

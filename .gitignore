@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.pyc
+.molecule/
+.cache/
+.vagrant/
+*.retry
+.ansible/
+group_vars/all/vault.yml
+!group_vars/all/vault.yml.example
+# App vars may contain passwords; keep only the example in git
+vars/apps/*
+!vars/apps/example.yml
+*.log
+.idea/
+.vscode/
+*.swp
+.DS_Store
+collections/
+.galaxy_cache/
+ansible_collections/
+
+# Local planning/research notes — not part of the published repo
+plans/
+
+# Vagrant lab state
+.vagrant/
+*.box

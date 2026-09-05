@@ -1,0 +1,31 @@
+---
+all:
+  children:
+    primary:
+      hosts:
+        pg-node-1:
+          ansible_host: 192.168.56.11
+          ansible_user: vagrant
+          ansible_ssh_private_key_file: .vagrant/machines/pg-node-1/libvirt/private_key
+          keepalived_priority: 100
+    standby:
+      hosts:
+        pg-node-2:
+          ansible_host: 192.168.56.12
+          ansible_user: vagrant
+          ansible_ssh_private_key_file: .vagrant/machines/pg-node-2/libvirt/private_key
+          keepalived_priority: 90
+    postgres_cluster:
+      children:
+        primary:
+        standby:
+  vars:
+    cluster_vip: "192.168.56.10"
+    cluster_vip_cidr: 24
+    postgresql_allowed_cidrs:
+      - "192.168.56.0/24"
+    keepalived_interface: eth1
+    keepalived_vrrp_unicast: true
+    pgbackrest_use_nfs: false
+    pgbackrest_repo_path: /var/lib/pgbackrest
+    ufw_enabled: false

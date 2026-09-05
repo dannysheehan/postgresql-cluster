@@ -1,0 +1,24 @@
+---
+extends: default
+
+ignore: |
+  .venv/
+  collections/
+  .ansible/
+
+rules:
+  # Ansible YAML runs wider than 80 columns; long URLs and Jinja
+  # expressions are not worth wrapping.
+  line-length:
+    max: 160
+    level: warning
+  comments:
+    min-spaces-from-content: 1
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false

@@ -1,0 +1,8 @@
+---
+- name: Include primary replication bootstrap
+  ansible.builtin.include_tasks: primary.yml
+  when: inventory_hostname in groups['primary']
+
+- name: Include standby replication bootstrap
+  ansible.builtin.include_tasks: standby.yml
+  when: inventory_hostname in groups['standby']

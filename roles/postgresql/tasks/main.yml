@@ -1,0 +1,129 @@
+---
+- name: Ensure gnupg and curl are present for PGDG key
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download PGDG signing key
+  ansible.builtin.get_url:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    dest: /etc/apt/keyrings/pgdg.asc
+    mode: "0644"
+
+- name: Add PGDG apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/pgdg.asc] http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main"
+    filename: pgdg
+    state: present
+    update_cache: true
+
+- name: Install PostgreSQL packages
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ postgresql_version }}"
+      - "postgresql-client-{{ postgresql_version }}"
+      - "postgresql-contrib-{{ postgresql_version }}"
+      - python3-psycopg2
+    state: present
+
+- name: Ensure postgres owns the data mount
+  ansible.builtin.file:
+    path: "{{ pg_data_mount | default('/var/lib/postgresql') }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+
+- name: Check PostgreSQL data directory
+  ansible.builtin.stat:
+    path: "{{ postgresql_data_dir }}"
+  register: pgdata_stat
+
+- name: Check PostgreSQL config directory
+  ansible.builtin.stat:
+    path: "{{ postgresql_config_dir }}"
+  register: pgconf_stat
+
+- name: Drop registered cluster when data directory was wiped (e.g. new data disk)
+  ansible.builtin.command:
+    cmd: "pg_dropcluster {{ postgresql_version }} {{ postgresql_cluster_name }}"
+  when:
+    - not pgdata_stat.stat.exists
+    - pgconf_stat.stat.exists
+  register: drop_cluster
+  changed_when: drop_cluster.rc == 0
+  failed_when: false
+
+- name: Create PostgreSQL cluster if data directory is missing
+  ansible.builtin.command:
+    cmd: "pg_createcluster {{ postgresql_version }} {{ postgresql_cluster_name }}"
+  args:
+    creates: "{{ postgresql_data_dir }}/PG_VERSION"
+  when: not pgdata_stat.stat.exists
+
+- name: Ensure conf.d directory exists
+  ansible.builtin.file:
+    path: "{{ postgresql_config_dir }}/conf.d"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0755"
+
+- name: Deploy postgresql.conf overrides drop-in
+  ansible.builtin.template:
+    src: conf.d/99-cluster.conf.j2
+    dest: "{{ postgresql_config_dir }}/conf.d/99-cluster.conf"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  notify: Restart PostgreSQL
+
+- name: Ensure conf.d is included from postgresql.conf
+  ansible.builtin.lineinfile:
+    path: "{{ postgresql_config_dir }}/postgresql.conf"
+    regexp: "^#?include_dir\\s*="
+    line: "include_dir = 'conf.d'"
+  notify: Restart PostgreSQL
+
+- name: Deploy pg_hba.conf
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "{{ postgresql_config_dir }}/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: "0640"
+  notify: Reload PostgreSQL
+
+- name: Flush handlers so wal_level is active before replication bootstrap
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure PostgreSQL is started and enabled on primary bootstrap hosts
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    state: started
+    enabled: true
+  when: inventory_hostname in groups['primary']
+
+- name: Ensure PostgreSQL service unit is enabled on standby (may be stopped for clone)
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    enabled: true
+  when: inventory_hostname in groups['standby']
+
+- name: Stop PostgreSQL on standby before clone (fresh package cluster)
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    state: stopped
+  when: inventory_hostname in groups['standby']

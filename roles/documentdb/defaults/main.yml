@@ -1,0 +1,54 @@
+---
+# FerretDB DocumentDB extension (Komodo Postgres backend)
+# https://docs.ferretdb.io/installation/documentdb/deb/
+documentdb_enabled: false
+
+# Match a FerretDB DocumentDB release asset for this PG + Ubuntu version
+documentdb_version: "0.107.0"
+documentdb_ferretdb_version: "2.7.0"
+documentdb_deb_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
+documentdb_deb_name: >-
+  ubuntu{{ ansible_distribution_version }}-postgresql-{{ postgresql_version }}-documentdb_{{ documentdb_version }}.ferretdb.{{ documentdb_ferretdb_version }}_{{ documentdb_deb_arch }}.deb
+documentdb_deb_url: >-
+  https://github.com/FerretDB/documentdb/releases/download/v{{ documentdb_version }}-ferretdb-{{ documentdb_ferretdb_version }}/{{ documentdb_deb_name }}
+documentdb_deb_dest: "/var/cache/{{ documentdb_deb_name }}"
+# Set in inventory for the pinned release (artifact lists the expected digest)
+documentdb_deb_checksum: ""
+
+documentdb_apt_dependencies:
+  - "postgresql-{{ postgresql_version }}-cron"
+  - "postgresql-{{ postgresql_version }}-pgvector"
+  - "postgresql-{{ postgresql_version }}-postgis-3"
+  - "postgresql-{{ postgresql_version }}-rum"
+
+# FerretDB requires these in postgresql.conf (shared_preload needs restart)
+documentdb_shared_preload_libraries:
+  - pg_cron
+  - pg_documentdb_core
+  - pg_documentdb
+documentdb_cron_database_name: postgres
+documentdb_settings:
+  documentdb.enableCompact: "on"
+  documentdb.enableLetAndCollationForQueryMatch: "on"
+  documentdb.enableNowSystemVariable: "on"
+  documentdb.enableSortbyIdPushDownToPrimaryKey: "on"
+  documentdb.enableSchemaValidation: "on"
+  documentdb.enableBypassDocumentValidation: "on"
+  documentdb.enableUserCrud: "on"
+  documentdb.maxUserLimit: "100"
+
+# CREATE EXTENSION targets (FerretDB uses the postgres database by default)
+documentdb_extension_databases:
+  - postgres
+
+# Optional: grant app role access for FerretDB's Postgres URL
+documentdb_app_user: ""
+# Extension-defined NOLOGIN role that owns DocumentDB table privileges
+documentdb_admin_role: documentdb_admin_role
+documentdb_probe_database: ferretprobe
+documentdb_probe_collection: probe
+# Password for post-grant verification (or resolve via 1Password below)
+documentdb_app_password: ""
+documentdb_app_password_op_item: ""
+documentdb_app_password_op_vault: Homelab
+documentdb_app_password_op_field: password

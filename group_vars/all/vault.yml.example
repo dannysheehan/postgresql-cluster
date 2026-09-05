@@ -1,0 +1,18 @@
+---
+# Copy to vault.yml and encrypt:
+#   cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+#   ansible-vault encrypt group_vars/all/vault.yml
+#
+# Or for lab/Molecule, plaintext vault.yml is fine and gitignored.
+
+vault_postgresql_superuser_password: "ChangeMeSuperuser!"
+vault_postgresql_replication_password: "ChangeMeReplicator!"
+
+# VRRP shared secret for keepalived. Must be identical on both nodes.
+vault_keepalived_auth_pass: "ChangeMeVRRP"
+
+# Optional: app DB passwords for playbooks/provision_app_db.yml
+# Prefer 1Password for many apps — see docs/OPS-app-provisioning.md
+# vault_app_passwords:
+#   nextcloud: "ChangeMeNextcloud!"
+#   vaultwarden: "ChangeMeVaultwarden!"

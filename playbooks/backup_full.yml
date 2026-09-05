@@ -1,0 +1,22 @@
+---
+- name: Run a full pgBackRest backup on primary
+  hosts: primary
+  become: true
+  tasks:
+    - name: Full backup
+      ansible.builtin.command:
+        cmd: pgbackrest --stanza={{ pgbackrest_stanza }} --type=full backup
+      become_user: postgres
+      async: 7200
+      poll: 15
+
+    - name: Show backup info
+      ansible.builtin.command:
+        cmd: pgbackrest --stanza={{ pgbackrest_stanza }} info
+      become_user: postgres
+      register: info
+      changed_when: false
+
+    - name: Display info
+      ansible.builtin.debug:
+        var: info.stdout_lines

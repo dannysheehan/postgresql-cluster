@@ -1,0 +1,21 @@
+---
+# First-run inventory: SSH as your desktop user ($USER) before sudo/NOPASSWD is configured.
+#
+# Usage (your user must be in the sudo group and know the sudo password):
+#   uv run ansible-playbook -i inventory/bootstrap.yml playbooks/bootstrap_host.yml -K
+#
+# After bootstrap, use inventory/hosts.yml (same ansible_user via bootstrap_ansible_user).
+
+all:
+  children:
+    postgres_cluster:
+      hosts:
+        pg-node-1:
+          ansible_host: 192.168.1.10
+        pg-node-2:
+          ansible_host: 192.168.1.11
+  vars:
+    # Must not reference group_vars — remote_user is resolved before they merge.
+    ansible_user: "{{ lookup('env', 'USER') | default(lookup('env', 'LOGNAME'), true) }}"
+    ansible_become: true
+    ansible_become_method: sudo

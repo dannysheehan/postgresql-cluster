@@ -1,0 +1,43 @@
+---
+- name: Verify promoted standby is writable
+  hosts: standby
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check recovery state on promoted node
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT pg_is_in_recovery() AS in_recovery
+      become_user: postgres
+      register: promoted
+
+    - name: Assert promoted node accepts writes
+      ansible.builtin.assert:
+        that:
+          - not (promoted.query_result[0].in_recovery | bool)
+
+    - name: Write via VIP after failover
+      community.postgresql.postgresql_query:
+        login_host: "{{ cluster_vip }}"
+        login_user: postgres
+        login_password: "{{ vault_postgresql_superuser_password }}"
+        port: "{{ postgresql_port }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS molecule_failover (id int PRIMARY KEY, note text);
+          INSERT INTO molecule_failover (id, note) VALUES (1, 'failover-ok')
+          ON CONFLICT (id) DO UPDATE SET note = EXCLUDED.note;
+      retries: 30
+      delay: 2
+      register: vip_write
+      until: vip_write is succeeded
+      no_log: true
+
+    - name: VIP should be on promoted node
+      ansible.builtin.command:
+        cmd: "ip -4 addr show {{ keepalived_interface }}"
+      register: vip_addr
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: cluster_vip in vip_addr.stdout

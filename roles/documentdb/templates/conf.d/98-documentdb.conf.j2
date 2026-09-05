@@ -1,0 +1,7 @@
+# Managed by Ansible — FerretDB DocumentDB / Komodo
+# https://docs.ferretdb.io/installation/documentdb/deb/
+shared_preload_libraries = '{{ documentdb_shared_preload_libraries | join(",") }}'
+cron.database_name = '{{ documentdb_cron_database_name }}'
+{% for key, value in documentdb_settings.items() %}
+{{ key }} = {{ value }}
+{% endfor %}

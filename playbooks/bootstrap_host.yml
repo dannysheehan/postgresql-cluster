@@ -1,0 +1,122 @@
+---
+# Bootstrap fresh Ubuntu VMs for Ansible (Python, sudo NOPASSWD, optional deploy user).
+#
+# Prerequisite: SSH as a user in the sudo group (password required on first run).
+#
+#   uv run ansible-playbook -i inventory/bootstrap.yml playbooks/bootstrap_host.yml -K
+#
+# -K prompts for your user's sudo password on the VM (not necessarily your SSH password).
+#
+# After success, use inventory/hosts.yml — ansible_user is the same $USER from group_vars.
+
+- name: Bootstrap hosts for Ansible
+  hosts: postgres_cluster
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../group_vars/all/bootstrap.yml
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    bootstrap_ansible_user: "{{ ansible_user }}"
+    bootstrap_packages:
+      - python3
+      - python3-apt
+      - python3-psycopg2
+      - sudo
+      - acl
+      - curl
+      - ca-certificates
+      - gnupg
+      - openssh-server
+    bootstrap_create_deploy_user: false
+    bootstrap_deploy_user: deploy
+    bootstrap_sudoers_file: /etc/sudoers.d/90-ansible
+    bootstrap_sudoers_mode: "0440"
+  tasks:
+    - name: Ensure bootstrap admin user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ bootstrap_ansible_user }}"
+      register: bootstrap_admin
+
+    - name: Fail if bootstrap admin user is missing
+      ansible.builtin.assert:
+        that:
+          - bootstrap_admin.ansible_facts.getent_passwd[bootstrap_ansible_user] is defined
+        fail_msg: >-
+          User {{ bootstrap_ansible_user }} not found on {{ inventory_hostname }}.
+          Log in via console and create it first.
+
+    - name: Install packages required by Ansible and later playbooks
+      ansible.builtin.apt:
+        name: "{{ bootstrap_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Configure passwordless sudo for Ansible admin user
+      ansible.builtin.copy:
+        dest: "{{ bootstrap_sudoers_file }}"
+        owner: root
+        group: root
+        mode: "{{ bootstrap_sudoers_mode }}"
+        validate: "visudo -cf %s"
+        content: |
+          # Managed by Ansible bootstrap_host.yml — do not edit by hand
+          {{ bootstrap_ansible_user }} ALL=(ALL) NOPASSWD:ALL
+
+    - name: Validate sudoers syntax
+      ansible.builtin.command:
+        cmd: visudo -c
+      changed_when: false
+
+    - name: Create deploy user when requested
+      when: bootstrap_create_deploy_user | bool
+      block:
+        - name: Ensure deploy group and user exist
+          ansible.builtin.user:
+            name: "{{ bootstrap_deploy_user }}"
+            shell: /bin/bash
+            create_home: true
+            groups: sudo
+            append: true
+
+        - name: Authorize deploy user SSH key from control machine
+          ansible.posix.authorized_key:
+            user: "{{ bootstrap_deploy_user }}"
+            key: "{{ lookup('file', bootstrap_deploy_authorized_key) }}"
+            state: present
+          when: bootstrap_deploy_authorized_key is defined
+
+        - name: Passwordless sudo for deploy user
+          ansible.builtin.copy:
+            dest: /etc/sudoers.d/91-ansible-deploy
+            owner: root
+            group: root
+            mode: "{{ bootstrap_sudoers_mode }}"
+            validate: "visudo -cf %s"
+            content: |
+              # Managed by Ansible bootstrap_host.yml
+              {{ bootstrap_deploy_user }} ALL=(ALL) NOPASSWD:ALL
+
+    - name: Verify passwordless sudo works for Ansible admin
+      ansible.builtin.command:
+        cmd: sudo -n id -u
+      become: false
+      register: sudo_check
+      changed_when: false
+
+    - name: Assert sudo works without password
+      ansible.builtin.assert:
+        that:
+          - sudo_check.stdout | trim == '0'
+        fail_msg: >-
+          NOPASSWD sudo is not working for {{ bootstrap_ansible_user }} on {{ inventory_hostname }}.
+
+    - name: Show bootstrap summary
+      ansible.builtin.debug:
+        msg:
+          - "Host {{ inventory_hostname }} ready for Ansible."
+          - "User: {{ bootstrap_ansible_user }} (passwordless sudo)"
+          - "Python: {{ ansible_python_version }}"
+          - "Next: prepare_data_disk.yml then site.yml"

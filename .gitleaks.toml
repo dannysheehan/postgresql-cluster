@@ -1,0 +1,17 @@
+# gitleaks configuration
+#
+# The Molecule lab credentials are fake by design and must stay readable so the
+# lab runs without the operator's vault password. Everything else is scanned.
+[extend]
+useDefault = true
+
+[[allowlist]]
+description = "Molecule lab credentials — throwaway, never used on a real node"
+paths = ['''molecule/lab_group_vars/all/vault\.yml''']
+
+[[allowlist]]
+description = "Placeholder credentials in example files"
+paths = [
+  '''group_vars/all/vault\.yml\.example''',
+  '''vars/apps/example\.yml''',
+]

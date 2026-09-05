@@ -1,0 +1,62 @@
+---
+# Install FerretDB DocumentDB extension + postgresql.conf settings for Komodo.
+# Settings match FerretDB DocumentDB DEB install guide:
+#   shared_preload_libraries = 'pg_cron,pg_documentdb_core,pg_documentdb'
+#   cron.database_name = 'postgres'
+#   documentdb.enable* / maxUserLimit
+#
+# Usage:
+#   uv run ansible-playbook -i inventory/hosts.yml playbooks/enable_documentdb.yml
+#
+# Requires packages on BOTH nodes before CREATE EXTENSION; rolling restart
+# (standby first, then primary) so shared_preload loads everywhere.
+
+- name: Install DocumentDB packages and config on all nodes
+  hosts: postgres_cluster
+  become: true
+  tasks:
+    - name: Install DocumentDB
+      ansible.builtin.include_role:
+        name: documentdb
+        tasks_from: install.yml
+
+- name: Restart PostgreSQL on standby (load shared_preload)
+  hosts: standby
+  become: true
+  serial: 1
+  tasks:
+    - name: Restart standby PostgreSQL
+      ansible.builtin.service:
+        name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+        state: restarted
+
+    - name: Wait for standby to accept connections
+      ansible.builtin.wait_for:
+        host: "{{ postgresql_node_ip }}"
+        port: "{{ postgresql_port }}"
+        timeout: 60
+
+- name: Restart PostgreSQL on primary (brief write outage)
+  hosts: primary
+  become: true
+  tasks:
+    - name: Restart primary PostgreSQL
+      ansible.builtin.service:
+        name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+        state: restarted
+
+    - name: Wait for VIP PostgreSQL
+      ansible.builtin.wait_for:
+        host: "{{ cluster_vip }}"
+        port: "{{ postgresql_port }}"
+        timeout: 90
+
+- name: Create DocumentDB extension on primary
+  hosts: primary
+  gather_facts: false
+  run_once: true
+  tasks:
+    - name: Configure DocumentDB extension
+      ansible.builtin.include_role:
+        name: documentdb
+        tasks_from: configure_extension.yml

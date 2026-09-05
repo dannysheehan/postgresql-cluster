@@ -1,0 +1,23 @@
+---
+# Copy to vars/apps/<app>.yml and adjust. Do not commit real passwords.
+#
+# Vault password (default):
+#   app_db_password: "{{ vault_app_passwords.nextcloud }}"
+#   # or: -e app_db_password='...'
+#
+# 1Password:
+#   app_secrets_backend: onepassword
+#   app_db_password_op_item: "Nextcloud-DB"
+#   app_db_password_op_vault: Homelab
+
+app_db_name: example_app
+app_db_user: example_app
+app_db_extensions: []
+# app_db_extensions:
+#   - uuid-ossp
+#   - pg_trgm
+
+# Required unless using 1Password backend:
+app_db_password: "ChangeMeAppPassword!"
+
+# app_secrets_backend: vault

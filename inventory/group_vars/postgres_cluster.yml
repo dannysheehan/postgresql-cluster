@@ -1,0 +1,56 @@
+---
+# ESXi / production overrides. More specific than group_vars/all, so these win
+# when using inventory/hosts.yml. Molecule does not load this file.
+cluster_vip: "192.168.1.99"
+cluster_vip_cidr: 24
+postgresql_allowed_cidrs:
+  - "192.168.1.0/24"
+ufw_enabled: true
+pgbackrest_use_nfs: true
+pgbackrest_nfs_server: "192.168.1.2"
+# Synology exports /volume1/nfs; pg_backups is a folder on that share
+pgbackrest_nfs_export: "/volume1/nfs"
+pgbackrest_nfs_mount: /mnt/pgbackrest
+pgbackrest_repo_path: "{{ pgbackrest_nfs_mount }}/pg_backups"
+# Synology here supports NFSv4.0 (not 4.1)
+pgbackrest_nfs_fstype: nfs
+pgbackrest_nfs_opts: "nfsvers=4.0,proto=tcp,hard,intr,rw,rsize=1048576,wsize=1048576,noatime,timeo=600,retrans=2,_netdev"
+
+# FerretDB DocumentDB for Komodo — apply with playbooks/enable_documentdb.yml
+documentdb_enabled: true
+documentdb_app_user: komodo_user
+documentdb_app_password_op_item: Komodo
+documentdb_app_password_op_vault: Turing-Pi
+documentdb_app_password_op_field: postgres-password
+# Artifact SHA256 for ubuntu24.04 postgresql-16 amd64 DocumentDB 0.107.0 / FerretDB 2.7.0
+documentdb_deb_checksum: "sha256:c13cdcdbc18998db7ddec92d01f56b1e09fe45ce015ec51ff2e08a0f5267f723"
+# Scoped FerretDB access (artifact step 7); CIDR all/all above still allows other apps
+postgresql_app_hba_entries:
+  - database: postgres
+    user: komodo_user
+    address: "192.168.1.0/24"
+    method: scram-sha-256
+# DocumentDB drop_collection / pg_cron open localhost libpq without a password
+postgresql_local_trust_hba_entries:
+  - database: postgres
+    user: documentdb_bg_worker_role
+    address: local
+  - database: postgres
+    user: documentdb_bg_worker_role
+    address: "127.0.0.1/32"
+  - database: postgres
+    user: documentdb_bg_worker_role
+    address: "::1/128"
+  - database: postgres
+    user: postgres
+    address: "127.0.0.1/32"
+  - database: postgres
+    user: postgres
+    address: "::1/128"
+  # DocumentDB drop_collection reconnects as the session user on localhost
+  - database: postgres
+    user: komodo_user
+    address: "127.0.0.1/32"
+  - database: postgres
+    user: komodo_user
+    address: "::1/128"

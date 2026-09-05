@@ -1,0 +1,13 @@
+---
+# Config is templated on every cluster node, so every node must re-read it.
+# Gating these on [primary] made the role depend on the replication role's
+# stop/start of the standby to pick up changes.
+- name: Reload PostgreSQL
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    state: reloaded
+
+- name: Restart PostgreSQL
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    state: restarted

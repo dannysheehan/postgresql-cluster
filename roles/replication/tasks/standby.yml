@@ -1,0 +1,86 @@
+---
+- name: Check whether standby is already streaming
+  ansible.builtin.stat:
+    path: "{{ postgresql_data_dir }}/standby.signal"
+  register: standby_signal
+
+- name: Stop PostgreSQL before cloning standby
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    state: stopped
+  when: not standby_signal.stat.exists
+
+- name: Remove existing data directory for fresh basebackup
+  ansible.builtin.file:
+    path: "{{ postgresql_data_dir }}"
+    state: absent
+  when: not standby_signal.stat.exists
+
+- name: Ensure parent data directory exists
+  ansible.builtin.file:
+    path: "{{ postgresql_data_dir | dirname }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0755"
+  when: not standby_signal.stat.exists
+
+- name: Create .pgpass for basebackup
+  ansible.builtin.template:
+    src: pgpass.j2
+    dest: /var/lib/postgresql/.pgpass
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  no_log: true
+
+- name: Clone primary via pg_basebackup
+  ansible.builtin.command:
+    cmd: >-
+      {{ postgresql_bin_dir }}/pg_basebackup
+      -h {{ hostvars[groups['primary'][0]].postgresql_node_ip | default(hostvars[groups['primary'][0]].ansible_host) | default(groups['primary'][0]) }}
+      -p {{ postgresql_port }}
+      -U {{ postgresql_replication_user }}
+      -D {{ postgresql_data_dir }}
+      -X stream
+      -R
+      -S {{ postgresql_replication_slot }}
+      -v
+    creates: "{{ postgresql_data_dir }}/standby.signal"
+  become: true
+  become_user: postgres
+  when: not standby_signal.stat.exists
+  register: basebackup_result
+  async: 3600
+  poll: 10
+
+- name: Ensure standby data directory ownership
+  ansible.builtin.file:
+    path: "{{ postgresql_data_dir }}"
+    owner: postgres
+    group: postgres
+    recurse: true
+
+- name: Start PostgreSQL on standby
+  ansible.builtin.service:
+    name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+    state: started
+    enabled: true
+
+- name: Wait for standby to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ postgresql_port }}"
+    timeout: 120
+
+- name: Verify standby is in recovery
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    port: "{{ postgresql_port }}"
+    query: SELECT pg_is_in_recovery() AS in_recovery
+  become: true
+  become_user: postgres
+  register: recovery_check
+  until: recovery_check.query_result[0].in_recovery | bool
+  retries: 30
+  delay: 2

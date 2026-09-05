@@ -1,0 +1,42 @@
+# Managed by Ansible
+global_defs {
+  router_id {{ inventory_hostname }}
+  script_user root
+  enable_script_security
+}
+
+vrrp_script chk_postgres {
+  script "/usr/local/bin/check_postgres_primary.sh"
+  interval {{ keepalived_check_interval }}
+  fall {{ keepalived_check_fall }}
+  rise {{ keepalived_check_rise }}
+  weight -30
+}
+
+vrrp_instance VI_PG {
+  state BACKUP
+  interface {{ keepalived_interface }}
+  virtual_router_id {{ keepalived_router_id }}
+  priority {{ keepalived_priority | default(keepalived_priority_primary if inventory_hostname in groups['primary'] else keepalived_priority_standby) }}
+  advert_int 1
+  authentication {
+    auth_type PASS
+    auth_pass {{ keepalived_auth_pass }}
+  }
+{% if keepalived_vrrp_unicast | bool %}
+  unicast_src_ip {{ postgresql_node_ip | default(ansible_host) }}
+  unicast_peer {
+{% for host in groups['postgres_cluster'] %}
+{% if host != inventory_hostname %}
+    {{ hostvars[host].postgresql_node_ip | default(hostvars[host].ansible_host) | default(host) }}
+{% endif %}
+{% endfor %}
+  }
+{% endif %}
+  virtual_ipaddress {
+    {{ cluster_vip }}/{{ cluster_vip_cidr }}
+  }
+  track_script {
+    chk_postgres
+  }
+}

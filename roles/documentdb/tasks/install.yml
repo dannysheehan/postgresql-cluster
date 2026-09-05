@@ -1,0 +1,28 @@
+---
+- name: Install DocumentDB apt dependencies
+  ansible.builtin.apt:
+    name: "{{ documentdb_apt_dependencies }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Download DocumentDB extension package
+  ansible.builtin.get_url:
+    url: "{{ documentdb_deb_url }}"
+    dest: "{{ documentdb_deb_dest }}"
+    mode: "0644"
+    checksum: "{{ documentdb_deb_checksum | default(omit, true) }}"
+
+- name: Install DocumentDB extension package
+  ansible.builtin.apt:
+    deb: "{{ documentdb_deb_dest }}"
+    state: present
+
+- name: Deploy DocumentDB postgresql.conf drop-in
+  ansible.builtin.template:
+    src: conf.d/98-documentdb.conf.j2
+    dest: "{{ postgresql_config_dir }}/conf.d/98-documentdb.conf"
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  register: documentdb_conf

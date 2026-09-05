@@ -1,0 +1,32 @@
+---
+# Planned switchover without swapping inventory mid-run:
+# 1) promote [standby]
+# 2) rebuild [primary] as new standby
+# Afterwards, swap inventory group membership for the next deploy.
+
+- name: Ensure standby is caught up before switchover
+  hosts: primary
+  become: true
+  tasks:
+    - name: Check replication status
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: >
+          SELECT client_addr, state, sync_state,
+                 pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes
+          FROM pg_stat_replication
+      become_user: postgres
+      register: repl
+
+    - name: Assert at least one streaming replica
+      ansible.builtin.assert:
+        that:
+          - repl.query_result | length > 0
+        fail_msg: No streaming replica connected; aborting switchover.
+
+- name: Promote current standby
+  ansible.builtin.import_playbook: failover.yml
+
+- name: Reinitialize former primary as standby
+  ansible.builtin.import_playbook: reinit_standby.yml

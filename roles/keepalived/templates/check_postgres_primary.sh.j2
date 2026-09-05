@@ -1,0 +1,15 @@
+#!/bin/bash
+# Return 0 only when local PostgreSQL is up and accepting writes (not a standby).
+set -euo pipefail
+
+export PATH="{{ postgresql_bin_dir }}:/usr/bin:/bin"
+
+if ! systemctl is-active --quiet "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"; then
+  exit 1
+fi
+
+result="$(sudo -u postgres psql -Atqc "SELECT CASE WHEN pg_is_in_recovery() THEN 1 ELSE 0 END" 2>/dev/null || echo 1)"
+if [[ "${result}" == "0" ]]; then
+  exit 0
+fi
+exit 1

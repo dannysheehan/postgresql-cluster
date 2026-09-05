@@ -1,0 +1,16 @@
+---
+- name: Prepare instances
+  hosts: postgres_cluster
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Wait for apt lock to clear
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
+      changed_when: false
+
+    - name: Ensure python3 is present
+      ansible.builtin.apt:
+        name: python3
+        state: present
+        update_cache: true

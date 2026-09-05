@@ -1,0 +1,6 @@
+---
+# Prefer tasks_from install.yml / configure_extension.yml via the enable playbook.
+# This entrypoint is for optional inclusion from site.yml when documentdb_enabled.
+- name: Install DocumentDB packages and config
+  ansible.builtin.import_tasks: install.yml
+  when: documentdb_enabled | bool

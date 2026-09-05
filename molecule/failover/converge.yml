@@ -1,0 +1,6 @@
+---
+- name: Build healthy cluster first
+  ansible.builtin.import_playbook: ../../playbooks/site.yml
+
+- name: Run failover promote
+  ansible.builtin.import_playbook: ../../playbooks/failover.yml

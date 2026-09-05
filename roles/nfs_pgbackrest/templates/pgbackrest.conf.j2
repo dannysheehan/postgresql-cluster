@@ -1,0 +1,20 @@
+# Managed by Ansible
+[global]
+repo1-path={{ pgbackrest_repo_path }}
+repo1-retention-full={{ pgbackrest_retention_full }}
+repo1-retention-diff={{ pgbackrest_retention_diff }}
+process-max={{ pgbackrest_process_max }}
+log-level-console=info
+log-level-file=detail
+start-fast=y
+compress-type={{ pgbackrest_compress_type }}
+compress-level=3
+
+[{{ pgbackrest_stanza }}]
+pg1-path={{ postgresql_data_dir }}
+pg1-user=postgres
+pg1-socket-path=/var/run/postgresql
+{% if inventory_hostname in groups['standby'] %}
+pg1-host={{ hostvars[groups['primary'][0]].postgresql_node_ip | default(hostvars[groups['primary'][0]].ansible_host) | default(groups['primary'][0]) }}
+pg1-host-user=postgres
+{% endif %}

@@ -1,0 +1,52 @@
+---
+- name: Install keepalived
+  ansible.builtin.apt:
+    name: keepalived
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Auto-detect VRRP interface from cluster node IP
+  ansible.builtin.set_fact:
+    keepalived_interface: "{{ item }}"
+  loop: "{{ ansible_interfaces }}"
+  when:
+    - keepalived_interface | default('') | length == 0 or keepalived_interface not in ansible_interfaces
+    - ansible_facts[item]['ipv4'] is defined
+    - ansible_facts[item]['ipv4']['address'] == (postgresql_node_ip | string)
+
+- name: Fail if VRRP interface could not be resolved
+  ansible.builtin.assert:
+    that:
+      - keepalived_interface | default('') | length > 0
+      - keepalived_interface in ansible_interfaces
+    fail_msg: >-
+      keepalived_interface={{ keepalived_interface | default('(empty)') }} is not a
+      host NIC. Available: {{ ansible_interfaces }}. Set keepalived_interface or
+      ensure postgresql_node_ip matches a local address.
+
+- name: Deploy PostgreSQL primary health check script
+  ansible.builtin.template:
+    src: check_postgres_primary.sh.j2
+    dest: /usr/local/bin/check_postgres_primary.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart keepalived
+
+- name: Apply keepalived config before starting the service
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure keepalived is started and enabled
+  ansible.builtin.service:
+    name: keepalived
+    state: started
+    enabled: true

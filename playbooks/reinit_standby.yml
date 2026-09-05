@@ -1,0 +1,144 @@
+---
+# Rebuild former primary (still in [primary] inventory) as a standby of the
+# newly promoted node (still in [standby] inventory). Run AFTER failover.yml
+# before you swap inventory group labels.
+
+- name: Rebuild former primary as standby of promoted node
+  hosts: primary
+  become: true
+  vars:
+    replication_source_host: "{{ hostvars[groups['standby'][0]].ansible_host | default(groups['standby'][0]) }}"
+  pre_tasks:
+    # This play wipes the data directory of every host in [primary]. That is only
+    # safe once groups['standby'][0] is a promoted, writable primary — otherwise
+    # we are about to destroy the cluster's only good copy.
+    - name: Check recovery state of the promoted node
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT pg_is_in_recovery() AS in_recovery
+      delegate_to: "{{ groups['standby'][0] }}"
+      become: true
+      become_user: postgres
+      register: reinit_source_state
+      changed_when: false
+
+    - name: Refuse to wipe this host unless the promoted node accepts writes
+      ansible.builtin.assert:
+        that:
+          - not (reinit_source_state.query_result[0].in_recovery | bool)
+        fail_msg: >-
+          {{ groups['standby'][0] }} is still in recovery, so it has not been
+          promoted. Wiping {{ postgresql_data_dir }} on {{ inventory_hostname }}
+          now would destroy the only writable copy of the cluster.
+          Run playbooks/failover.yml first.
+        success_msg: >-
+          {{ groups['standby'][0] }} is writable; safe to rebuild
+          {{ inventory_hostname }} from it.
+
+  tasks:
+    - name: Stop PostgreSQL
+      ansible.builtin.service:
+        name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+        state: stopped
+
+    - name: Remove data directory
+      ansible.builtin.file:
+        path: "{{ postgresql_data_dir }}"
+        state: absent
+
+    - name: Ensure parent data directory exists
+      ansible.builtin.file:
+        path: "{{ postgresql_data_dir | dirname }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0755"
+
+    - name: Create .pgpass for basebackup from promoted node
+      ansible.builtin.copy:
+        dest: /var/lib/postgresql/.pgpass
+        owner: postgres
+        group: postgres
+        mode: "0600"
+        content: |
+          {{ replication_source_host }}:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}
+          {{ cluster_vip }}:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}
+          localhost:{{ postgresql_port }}:replication:{{ postgresql_replication_user }}:{{ vault_postgresql_replication_password }}
+      no_log: true
+
+    - name: Ensure replication slot exists on promoted primary
+      community.postgresql.postgresql_query:
+        login_host: "{{ replication_source_host }}"
+        login_user: postgres
+        login_password: "{{ vault_postgresql_superuser_password }}"
+        port: "{{ postgresql_port }}"
+        query: >
+          SELECT pg_create_physical_replication_slot('{{ postgresql_replication_slot }}', true, false)
+          WHERE NOT EXISTS (
+            SELECT 1 FROM pg_replication_slots WHERE slot_name = '{{ postgresql_replication_slot }}'
+          )
+      delegate_to: "{{ groups['standby'][0] }}"
+      become_user: postgres
+      failed_when: false
+      no_log: true
+
+    - name: Create slot via local socket on promoted node
+      community.postgresql.postgresql_slot:
+        name: "{{ postgresql_replication_slot }}"
+        slot_type: physical
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ postgresql_port }}"
+      delegate_to: "{{ groups['standby'][0] }}"
+      become_user: postgres
+      failed_when: false
+
+    - name: Clone from promoted primary
+      ansible.builtin.command:
+        cmd: >-
+          {{ postgresql_bin_dir }}/pg_basebackup
+          -h {{ replication_source_host }}
+          -p {{ postgresql_port }}
+          -U {{ postgresql_replication_user }}
+          -D {{ postgresql_data_dir }}
+          -X stream
+          -R
+          -S {{ postgresql_replication_slot }}
+          -v
+      become_user: postgres
+
+    - name: Fix ownership
+      ansible.builtin.file:
+        path: "{{ postgresql_data_dir }}"
+        owner: postgres
+        group: postgres
+        recurse: true
+
+    - name: Start PostgreSQL
+      ansible.builtin.service:
+        name: "postgresql@{{ postgresql_version }}-{{ postgresql_cluster_name }}"
+        state: started
+        enabled: true
+
+    - name: Start keepalived
+      ansible.builtin.service:
+        name: keepalived
+        state: started
+        enabled: true
+
+    - name: Verify recovery mode
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        port: "{{ postgresql_port }}"
+        query: SELECT pg_is_in_recovery() AS in_recovery
+      become_user: postgres
+      register: recovery_check
+      until: recovery_check.query_result[0].in_recovery | bool
+      retries: 30
+      delay: 2
+
+    - name: Print inventory swap reminder
+      ansible.builtin.debug:
+        msg: >-
+          Rebuild complete. Swap inventory labels so the writable node is in
+          [primary] and this host is in [standby] before the next site/failover run.
