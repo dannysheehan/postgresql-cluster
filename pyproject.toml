@@ -5,7 +5,7 @@ description = "2-node active/passive PostgreSQL cluster (Ansible + Molecule/Vagr
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "ansible-core>=2.16,<2.19",
+  "ansible-core>=2.16,<2.22",
   "molecule>=25.0.0,<27.0.0",
   "molecule-vagrant>=2.0.0",
   "ansible-lint>=24.0.0",
